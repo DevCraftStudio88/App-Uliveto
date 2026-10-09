@@ -1,0 +1,6 @@
+{
+  "name": "Uliveto",
+  "description": "Gestione moderna ed elegante dell'azienda agricola: terreni, lavori, magazzino, diario vocale con AI, mappa satellitare e bilancio campagna.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
