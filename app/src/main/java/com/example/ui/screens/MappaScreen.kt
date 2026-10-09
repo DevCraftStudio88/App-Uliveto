@@ -46,11 +46,15 @@ import org.json.JSONObject
 enum class MapInteractionMode {
     VIEW,
     DRAW_PROPERTY,
-    DRAW_ZONE
+    DRAW_ZONE,
+    EDIT_PROPERTY,
+    EDIT_ZONE
 }
 
 class MapBridge(
     private val onPolygonPointsChanged: (List<GeoPoint>, Double, Double) -> Unit,
+    private val onEditedPropertyReceived: (List<GeoPoint>, Double, Double) -> Unit,
+    private val onEditedZoneReceived: (String, List<GeoPoint>, Double, Double) -> Unit,
     private val onZoneSelected: (String) -> Unit
 ) {
     @JavascriptInterface
@@ -63,6 +67,32 @@ class MapBridge(
                 pts.add(GeoPoint(obj.getDouble("lat"), obj.getDouble("lng")))
             }
             onPolygonPointsChanged(pts, areaM2, areaHa)
+        } catch (_: Exception) {}
+    }
+
+    @JavascriptInterface
+    fun updateEditedProperty(jsonStr: String, areaM2: Double, areaHa: Double) {
+        try {
+            val arr = JSONArray(jsonStr)
+            val pts = mutableListOf<GeoPoint>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                pts.add(GeoPoint(obj.getDouble("lat"), obj.getDouble("lng")))
+            }
+            onEditedPropertyReceived(pts, areaM2, areaHa)
+        } catch (_: Exception) {}
+    }
+
+    @JavascriptInterface
+    fun updateEditedZone(zoneId: String, jsonStr: String, areaM2: Double, areaHa: Double) {
+        try {
+            val arr = JSONArray(jsonStr)
+            val pts = mutableListOf<GeoPoint>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                pts.add(GeoPoint(obj.getDouble("lat"), obj.getDouble("lng")))
+            }
+            onEditedZoneReceived(zoneId, pts, areaM2, areaHa)
         } catch (_: Exception) {}
     }
 
@@ -88,10 +118,13 @@ fun MappaScreen(
     var interactionMode by remember { mutableStateOf(MapInteractionMode.VIEW) }
     var isSatelliteLayer by remember { mutableStateOf(true) }
 
-    // Real-time drawing state
+    // Real-time drawing and editing state
     var currentDrawnPoints by remember { mutableStateOf<List<GeoPoint>>(emptyList()) }
     var currentDrawnM2 by remember { mutableDoubleStateOf(0.0) }
     var currentDrawnHa by remember { mutableDoubleStateOf(0.0) }
+
+    var editedPropertyPoints by remember { mutableStateOf<List<GeoPoint>?>(null) }
+    var editedZonePoints by remember { mutableStateOf<Pair<String, List<GeoPoint>>?>(null) }
 
     // Dialog state for new Zone details
     var showZoneSaveDialog by remember { mutableStateOf(false) }
@@ -108,7 +141,7 @@ fun MappaScreen(
     var showDeleteZoneConfirm1 by remember { mutableStateOf<Field?>(null) }
     var showDeleteZoneConfirm2 by remember { mutableStateOf<Field?>(null) }
 
-    // Edit zone dialog
+    // Edit zone form dialog
     var fieldToEdit by remember { mutableStateOf<Field?>(null) }
 
     // GPS tracking
@@ -179,24 +212,29 @@ fun MappaScreen(
         refreshMapPolygons()
     }
 
-    Box(modifier = modifier.fillMaxSize().background(Color(0xFF1E281F))) {
-        // Real Geographic Map in WebView
+    Box(modifier = modifier.fillMaxSize().background(Color(0xFFE8ECE9))) {
+        // High Performance Geographic Map in WebView
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 WebView(ctx).apply {
+                    // Full WebView permission flags to allow tile loading from asset scheme
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                     settings.databaseEnabled = true
                     settings.allowFileAccess = true
                     settings.allowContentAccess = true
+                    settings.allowFileAccessFromFileURLs = true
+                    settings.allowUniversalAccessFromFileURLs = true
                     settings.useWideViewPort = true
                     settings.loadWithOverviewMode = true
+                    settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+                    settings.userAgentString = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 UlivetoApp/1.0"
                     settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
 
                     webChromeClient = object : android.webkit.WebChromeClient() {
                         override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
-                            android.util.Log.d("LeafletMap", "${consoleMessage?.message()} -- line ${consoleMessage?.lineNumber()}")
+                            android.util.Log.d("LeafletMap", "${consoleMessage?.message()} [line ${consoleMessage?.lineNumber()}]")
                             return true
                         }
                     }
@@ -205,6 +243,16 @@ fun MappaScreen(
                         MapBridge(
                             onPolygonPointsChanged = { pts, m2, ha ->
                                 currentDrawnPoints = pts
+                                currentDrawnM2 = m2
+                                currentDrawnHa = ha
+                            },
+                            onEditedPropertyReceived = { pts, m2, ha ->
+                                editedPropertyPoints = pts
+                                currentDrawnM2 = m2
+                                currentDrawnHa = ha
+                            },
+                            onEditedZoneReceived = { zId, pts, m2, ha ->
+                                editedZonePoints = Pair(zId, pts)
                                 currentDrawnM2 = m2
                                 currentDrawnHa = ha
                             },
@@ -221,7 +269,10 @@ fun MappaScreen(
                             view?.postDelayed({
                                 view.evaluateJavascript("invalidateMapSize();", null)
                                 refreshMapPolygons()
-                            }, 150)
+                            }, 100)
+                            view?.postDelayed({
+                                view.evaluateJavascript("invalidateMapSize();", null)
+                            }, 500)
                         }
                     }
 
@@ -310,6 +361,7 @@ fun MappaScreen(
                     MapInteractionMode.VIEW -> FarmSurface.copy(alpha = 0.95f)
                     MapInteractionMode.DRAW_PROPERTY -> Color(0xFFFFF3CD)
                     MapInteractionMode.DRAW_ZONE -> Color(0xFFE8F5E9)
+                    MapInteractionMode.EDIT_PROPERTY, MapInteractionMode.EDIT_ZONE -> Color(0xFFE3F2FD)
                 },
                 border = BorderStroke(1.5.dp, FarmCardBorder),
                 modifier = Modifier.fillMaxWidth()
@@ -322,57 +374,99 @@ fun MappaScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = if (property != null) "Proprietà: ${property?.name}" else "Nessuna proprietà tracciata",
+                                        text = if (property != null) "Proprietà: ${property?.name}" else "Nessuna proprietà delimitata",
                                         fontSize = 15.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = FarmTextPrimary
                                     )
                                     Text(
-                                        text = if (property != null) "${String.format("%.1f", property?.areaHectares)} ha (${String.format("%.0f", property?.areaSquareMeters)} m²) · ${fields.size} zone" else "Tocca 'Disegna proprietà' per iniziare",
+                                        text = if (property != null) "${String.format("%.2f", property?.areaHectares)} ha (${String.format("%.0f", property?.areaSquareMeters)} m²) · ${fields.size} zone" else "Tocca 'Disegna proprietà' per tracciare i confini",
                                         fontSize = 12.sp,
                                         color = FarmTextSecondary
                                     )
                                 }
 
                                 if (property != null) {
-                                    IconButton(
-                                        onClick = { showDeletePropConfirm1 = true },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.DeleteOutline,
-                                            contentDescription = "Elimina proprietà",
-                                            tint = FarmRedAlert,
-                                            modifier = Modifier.size(20.dp)
-                                        )
+                                    Row {
+                                        IconButton(
+                                            onClick = {
+                                                interactionMode = MapInteractionMode.EDIT_PROPERTY
+                                                webViewRef?.evaluateJavascript("enableEditProperty();", null)
+                                            },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.EditLocationAlt,
+                                                contentDescription = "Modifica vertici",
+                                                tint = FarmGreenDark,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { showDeletePropConfirm1 = true },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.DeleteOutline,
+                                                contentDescription = "Elimina proprietà",
+                                                tint = FarmRedAlert,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                         MapInteractionMode.DRAW_PROPERTY -> {
                             Text(
-                                text = "✏️ Disegno confine proprietà",
+                                text = "✏️ Delimitazione confini proprietà (Geoman)",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFF856404)
                             )
                             Text(
-                                text = "Tocca la mappa per aggiungere punti (${currentDrawnPoints.size} vertici) · ${String.format("%.0f", currentDrawnM2)} m² (${String.format("%.2f", currentDrawnHa)} ha)",
+                                text = "Tocca per posizionare i vertici (${currentDrawnPoints.size} punti) · Calcolo real-time: ${String.format("%.0f", currentDrawnM2)} m² (${String.format("%.2f", currentDrawnHa)} ha)",
                                 fontSize = 12.sp,
                                 color = FarmTextPrimary
                             )
                         }
                         MapInteractionMode.DRAW_ZONE -> {
                             Text(
-                                text = "🌱 Disegno nuova zona",
+                                text = "🌱 Delimitazione nuova zona",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = FarmGreenDark
                             )
                             Text(
-                                text = "Tocca per tracciare il poligono (${currentDrawnPoints.size} vertici) · ${String.format("%.0f", currentDrawnM2)} m² (${String.format("%.2f", currentDrawnHa)} ha)",
+                                text = "Tocca la mappa per tracciare il poligono (${currentDrawnPoints.size} punti) · ${String.format("%.0f", currentDrawnM2)} m² (${String.format("%.2f", currentDrawnHa)} ha)",
+                                fontSize = 12.sp,
+                                color = FarmTextPrimary
+                            )
+                        }
+                        MapInteractionMode.EDIT_PROPERTY -> {
+                            Text(
+                                text = "📐 Modifica vertici proprietà",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF0D47A1)
+                            )
+                            Text(
+                                text = "Trascina i nodi per modificare il perimetro. Tocca un nodo per rimuoverlo.",
+                                fontSize = 12.sp,
+                                color = FarmTextPrimary
+                            )
+                        }
+                        MapInteractionMode.EDIT_ZONE -> {
+                            Text(
+                                text = "📐 Modifica vertici zona",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF0D47A1)
+                            )
+                            Text(
+                                text = "Trascina i nodi sulla mappa per aggiustare i confini della zona.",
                                 fontSize = 12.sp,
                                 color = FarmTextPrimary
                             )
@@ -472,7 +566,7 @@ fun MappaScreen(
                             modifier = Modifier.weight(1f).height(48.dp)
                         ) {
                             Text(
-                                text = if (property == null) "Disegna proprietà" else "Ridisegna confini",
+                                text = if (property == null) "Delimita proprietà" else "Ridisegna confini",
                                 color = Color.Black,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
@@ -562,10 +656,103 @@ fun MappaScreen(
                                 modifier = Modifier.fillMaxWidth().height(48.dp)
                             ) {
                                 Text(
-                                    text = if (currentDrawnPoints.size < 3) "Aggiungi almeno 3 punti (${currentDrawnPoints.size}/3)" else "✓ Conferma e Salva (${String.format("%.2f", currentDrawnHa)} ha)",
+                                    text = if (currentDrawnPoints.size < 3) "Aggiungi almeno 3 punti (${currentDrawnPoints.size}/3)" else "✓ Salva poligono (${String.format("%.2f", currentDrawnHa)} ha)",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp
                                 )
+                            }
+                        }
+                    }
+                }
+                MapInteractionMode.EDIT_PROPERTY -> {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        border = BorderStroke(1.5.dp, FarmCardBorder),
+                        color = FarmSurface,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        editedPropertyPoints?.let { pts ->
+                                            if (pts.size >= 3) {
+                                                FarmRepository.saveProperty(pts)
+                                            }
+                                        }
+                                        interactionMode = MapInteractionMode.VIEW
+                                        webViewRef?.evaluateJavascript("disableEditing();", null)
+                                        refreshMapPolygons()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = FarmGreenDark),
+                                    shape = RoundedCornerShape(16.dp),
+                                    modifier = Modifier.weight(1f).height(46.dp)
+                                ) {
+                                    Text("✓ Salva modifiche vertici", color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        interactionMode = MapInteractionMode.VIEW
+                                        webViewRef?.evaluateJavascript("disableEditing();", null)
+                                        refreshMapPolygons()
+                                    },
+                                    shape = RoundedCornerShape(16.dp),
+                                    border = BorderStroke(1.dp, FarmCardBorder),
+                                    modifier = Modifier.height(46.dp)
+                                ) {
+                                    Text("Annulla")
+                                }
+                            }
+                        }
+                    }
+                }
+                MapInteractionMode.EDIT_ZONE -> {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        border = BorderStroke(1.5.dp, FarmCardBorder),
+                        color = FarmSurface,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        editedZonePoints?.let { (zId, pts) ->
+                                            val f = fields.find { it.id == zId }
+                                            if (f != null && pts.size >= 3) {
+                                                FarmRepository.updateField(f.id, f.name, f.crop, f.notes, polygon = pts)
+                                            }
+                                        }
+                                        interactionMode = MapInteractionMode.VIEW
+                                        webViewRef?.evaluateJavascript("disableEditing();", null)
+                                        refreshMapPolygons()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = FarmGreenDark),
+                                    shape = RoundedCornerShape(16.dp),
+                                    modifier = Modifier.weight(1f).height(46.dp)
+                                ) {
+                                    Text("✓ Salva confini zona", color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        interactionMode = MapInteractionMode.VIEW
+                                        webViewRef?.evaluateJavascript("disableEditing();", null)
+                                        refreshMapPolygons()
+                                    },
+                                    shape = RoundedCornerShape(16.dp),
+                                    border = BorderStroke(1.dp, FarmCardBorder),
+                                    modifier = Modifier.height(46.dp)
+                                ) {
+                                    Text("Annulla")
+                                }
                             }
                         }
                     }
@@ -602,8 +789,14 @@ fun MappaScreen(
                             }
 
                             Row {
+                                IconButton(onClick = {
+                                    interactionMode = MapInteractionMode.EDIT_ZONE
+                                    webViewRef?.evaluateJavascript("enableEditZone('${field.id}');", null)
+                                }) {
+                                    Icon(Icons.Default.EditLocationAlt, contentDescription = "Modifica vertici", tint = FarmGreenDark)
+                                }
                                 IconButton(onClick = { fieldToEdit = field }) {
-                                    Icon(Icons.Default.Edit, contentDescription = "Modifica", tint = FarmTextPrimary)
+                                    Icon(Icons.Default.Edit, contentDescription = "Modifica dati", tint = FarmTextPrimary)
                                 }
                                 IconButton(onClick = { showDeleteZoneConfirm1 = field }) {
                                     Icon(Icons.Default.DeleteOutline, contentDescription = "Elimina", tint = FarmRedAlert)
@@ -874,13 +1067,15 @@ private fun generateLeafletMapHtml(): String {
         <head>
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-            <link rel="stylesheet" href="leaflet/leaflet.css" onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';" />
-            <script src="leaflet/leaflet.js"></script>
-            <script>
-                if (typeof L === 'undefined') {
-                    document.write('<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>');
-                }
-            </script>
+            <!-- Leaflet and Geoman local stylesheets -->
+            <link rel="stylesheet" href="file:///android_asset/leaflet/leaflet.css" />
+            <link rel="stylesheet" href="file:///android_asset/leaflet/leaflet-geoman.css" />
+            
+            <!-- Leaflet, Geoman and Turf libraries -->
+            <script src="file:///android_asset/leaflet/leaflet.js"></script>
+            <script src="file:///android_asset/leaflet/leaflet-geoman.min.js"></script>
+            <script src="file:///android_asset/leaflet/turf.min.js"></script>
+            
             <style>
                 html, body {
                     margin: 0;
@@ -888,7 +1083,7 @@ private fun generateLeafletMapHtml(): String {
                     width: 100%;
                     height: 100%;
                     overflow: hidden;
-                    background: #1b261e;
+                    background: #eef2ed;
                 }
                 #map {
                     position: absolute;
@@ -898,26 +1093,31 @@ private fun generateLeafletMapHtml(): String {
                     right: 0;
                     width: 100%;
                     height: 100%;
-                    background: #1b261e;
+                    background: #eef2ed;
                 }
                 .vertex-marker {
                     background: #ffffff;
                     border: 2px solid #1b683b;
                     border-radius: 50%;
-                    width: 14px;
-                    height: 14px;
-                    margin-left: -7px;
-                    margin-top: -7px;
+                    width: 16px;
+                    height: 16px;
+                    margin-left: -8px;
+                    margin-top: -8px;
+                    box-shadow: 0 2px 5px rgba(0,0,0,0.3);
                 }
                 .zone-label {
-                    background: rgba(255, 255, 255, 0.92);
-                    border: 1px solid #1b683b;
+                    background: rgba(255, 255, 255, 0.95);
+                    border: 1.5px solid #1b683b;
                     border-radius: 8px;
                     color: #1b261e;
-                    font-weight: bold;
+                    font-weight: 700;
                     font-size: 11px;
-                    padding: 2px 6px;
-                    box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+                    padding: 3px 8px;
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+                }
+                .leaflet-touch .leaflet-control-layers, .leaflet-touch .leaflet-bar {
+                    border: none;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
                 }
             </style>
         </head>
@@ -926,26 +1126,43 @@ private fun generateLeafletMapHtml(): String {
             <script>
                 var map = L.map('map', {
                     zoomControl: false,
-                    attributionControl: true
-                }).setView([41.9028, 12.4964], 6);
+                    attributionControl: false,
+                    preferCanvas: true
+                }).setView([40.8518, 14.2681], 8);
 
-                // OpenStreetMap Tile Layer (Complies with OSM Tile Policy and attribution)
-                var streetsLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    maxZoom: 19,
-                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                });
-
-                // Satellite Tile Layer (Free hybrid imagery)
+                // Multi-tier Tile Layers (Satellite Hybrid & OpenStreetMap)
                 var satelliteLayer = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
                     maxZoom: 20,
-                    attribution: '&copy; Google'
-                }).addTo(map);
+                    subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+                    crossOrigin: true
+                });
+
+                var esriSatelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                    maxZoom: 19,
+                    crossOrigin: true
+                });
+
+                var streetsLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 19,
+                    crossOrigin: true
+                });
 
                 var currentBaseLayer = satelliteLayer;
+                currentBaseLayer.addTo(map);
+
+                // Fallback handling for satellite tiles
+                satelliteLayer.on('tileerror', function() {
+                    if (map.hasLayer(satelliteLayer) && !map.hasLayer(esriSatelliteLayer)) {
+                        map.removeLayer(satelliteLayer);
+                        esriSatelliteLayer.addTo(map);
+                        currentBaseLayer = esriSatelliteLayer;
+                    }
+                });
 
                 function switchBaseLayer(name) {
                     if (name === 'streets') {
                         if (map.hasLayer(satelliteLayer)) map.removeLayer(satelliteLayer);
+                        if (map.hasLayer(esriSatelliteLayer)) map.removeLayer(esriSatelliteLayer);
                         if (!map.hasLayer(streetsLayer)) streetsLayer.addTo(map);
                         currentBaseLayer = streetsLayer;
                     } else {
@@ -962,15 +1179,32 @@ private fun generateLeafletMapHtml(): String {
                 }
                 window.addEventListener('resize', invalidateMapSize);
                 setTimeout(invalidateMapSize, 100);
-                setTimeout(invalidateMapSize, 300);
-                setTimeout(invalidateMapSize, 800);
-                setTimeout(invalidateMapSize, 1500);
+                setTimeout(invalidateMapSize, 400);
+                setTimeout(invalidateMapSize, 1000);
 
+                // Layer Groups
                 var propertyLayer = L.layerGroup().addTo(map);
                 var zonesLayer = L.layerGroup().addTo(map);
                 var userMarkerLayer = L.layerGroup().addTo(map);
 
-                // Drawing engine
+                var currentPropertyPolygon = null;
+                var currentZonePolygons = {};
+
+                // Initialize Leaflet Geoman if present
+                if (map.pm) {
+                    try {
+                        map.pm.setLang('it');
+                        map.pm.setGlobalOptions({
+                            snappable: true,
+                            snapDistance: 25,
+                            allowSelfIntersection: false
+                        });
+                    } catch(e) {
+                        console.warn("Geoman init options:", e);
+                    }
+                }
+
+                // Drawing Engine state
                 var isDrawing = false;
                 var drawMode = 'property';
                 var drawnPoints = [];
@@ -978,8 +1212,18 @@ private fun generateLeafletMapHtml(): String {
                 var drawnPolyline = null;
                 var drawnPolygon = null;
 
+                // Geodesic area calculation (Ellipsoidal WGS84 & Turf.js fallback)
                 function calculateGeodesicArea(coords) {
-                    if (coords.length < 3) return 0;
+                    if (!coords || coords.length < 3) return 0;
+                    try {
+                        if (typeof turf !== 'undefined' && turf.area) {
+                            var polyPts = coords.map(function(c) { return [c.lng, c.lat]; });
+                            polyPts.push([coords[0].lng, coords[0].lat]);
+                            var polyGeoJson = turf.polygon([polyPts]);
+                            return turf.area(polyGeoJson);
+                        }
+                    } catch(e) {}
+                    
                     var rad = 6378137.0;
                     var total = 0;
                     for (var i = 0; i < coords.length; i++) {
@@ -997,7 +1241,7 @@ private fun generateLeafletMapHtml(): String {
                 function notifyBridge() {
                     var areaM2 = calculateGeodesicArea(drawnPoints);
                     var areaHa = areaM2 / 10000.0;
-                    if (window.AndroidBridge) {
+                    if (window.AndroidBridge && window.AndroidBridge.updateDrawingPoints) {
                         window.AndroidBridge.updateDrawingPoints(JSON.stringify(drawnPoints), areaM2, areaHa);
                     }
                 }
@@ -1009,14 +1253,14 @@ private fun generateLeafletMapHtml(): String {
                     if (drawnPoints.length >= 3) {
                         drawnPolygon = L.polygon(drawnPoints, {
                             color: drawMode === 'property' ? '#f5c71a' : '#2e7d32',
-                            weight: 3,
+                            weight: 3.5,
                             fillOpacity: 0.35
                         }).addTo(map);
                     } else if (drawnPoints.length >= 2) {
                         drawnPolyline = L.polyline(drawnPoints, {
                             color: drawMode === 'property' ? '#f5c71a' : '#2e7d32',
-                            weight: 3,
-                            dashArray: '5, 5'
+                            weight: 3.5,
+                            dashArray: '6, 6'
                         }).addTo(map);
                     }
                     notifyBridge();
@@ -1031,8 +1275,8 @@ private fun generateLeafletMapHtml(): String {
                             draggable: true,
                             icon: L.divIcon({
                                 className: 'vertex-marker',
-                                iconSize: [14, 14],
-                                iconAnchor: [7, 7]
+                                iconSize: [16, 16],
+                                iconAnchor: [8, 8]
                             })
                         }).addTo(map);
 
@@ -1089,6 +1333,7 @@ private fun generateLeafletMapHtml(): String {
 
                 function startDrawing(mode) {
                     clearDrawing();
+                    disableEditing();
                     isDrawing = true;
                     drawMode = mode;
                 }
@@ -1113,6 +1358,59 @@ private fun generateLeafletMapHtml(): String {
                     drawnPolygon = null;
                 }
 
+                // Interactive Vertex Editing with Geoman
+                function enableEditProperty() {
+                    disableEditing();
+                    if (currentPropertyPolygon) {
+                        if (currentPropertyPolygon.pm) {
+                            currentPropertyPolygon.pm.enable({
+                                allowSelfIntersection: false
+                            });
+                            currentPropertyPolygon.on('pm:edit pm:change pm:vertexadded pm:vertexremoved', function() {
+                                var latlngs = currentPropertyPolygon.getLatLngs();
+                                var ring = Array.isArray(latlngs[0]) ? latlngs[0] : latlngs;
+                                var pts = ring.map(function(ll) { return { lat: ll.lat, lng: ll.lng }; });
+                                var areaM2 = calculateGeodesicArea(pts);
+                                var areaHa = areaM2 / 10000.0;
+                                if (window.AndroidBridge && window.AndroidBridge.updateEditedProperty) {
+                                    window.AndroidBridge.updateEditedProperty(JSON.stringify(pts), areaM2, areaHa);
+                                }
+                            });
+                        }
+                    }
+                }
+
+                function enableEditZone(zoneId) {
+                    disableEditing();
+                    var zPoly = currentZonePolygons[zoneId];
+                    if (zPoly && zPoly.pm) {
+                        zPoly.pm.enable({
+                            allowSelfIntersection: false
+                        });
+                        zPoly.on('pm:edit pm:change pm:vertexadded pm:vertexremoved', function() {
+                            var latlngs = zPoly.getLatLngs();
+                            var ring = Array.isArray(latlngs[0]) ? latlngs[0] : latlngs;
+                            var pts = ring.map(function(ll) { return { lat: ll.lat, lng: ll.lng }; });
+                            var areaM2 = calculateGeodesicArea(pts);
+                            var areaHa = areaM2 / 10000.0;
+                            if (window.AndroidBridge && window.AndroidBridge.updateEditedZone) {
+                                window.AndroidBridge.updateEditedZone(zoneId, JSON.stringify(pts), areaM2, areaHa);
+                            }
+                        });
+                    }
+                }
+
+                function disableEditing() {
+                    if (currentPropertyPolygon && currentPropertyPolygon.pm) {
+                        currentPropertyPolygon.pm.disable();
+                    }
+                    for (var id in currentZonePolygons) {
+                        if (currentZonePolygons[id] && currentZonePolygons[id].pm) {
+                            currentZonePolygons[id].pm.disable();
+                        }
+                    }
+                }
+
                 function loadExistingGeometryBase64(propB64, zonesB64) {
                     try {
                         var propJson = decodeURIComponent(escape(atob(propB64)));
@@ -1127,20 +1425,22 @@ private fun generateLeafletMapHtml(): String {
                     try {
                         propertyLayer.clearLayers();
                         zonesLayer.clearLayers();
+                        currentPropertyPolygon = null;
+                        currentZonePolygons = {};
 
                         var prop = (typeof propertyJson === 'string') ? JSON.parse(propertyJson || '[]') : (propertyJson || []);
                         var hasProp = false;
                         if (prop && prop.length >= 3) {
                             var latlngs = prop.map(function(p) { return [p.lat, p.lng]; });
-                            var pPoly = L.polygon(latlngs, {
-                                color: '#e69500',
-                                weight: 3,
-                                dashArray: '6, 6',
-                                fillOpacity: 0.12
+                            currentPropertyPolygon = L.polygon(latlngs, {
+                                color: '#f5c71a',
+                                weight: 3.5,
+                                dashArray: '5, 5',
+                                fillOpacity: 0.15
                             }).addTo(propertyLayer);
                             hasProp = true;
                             if (!isDrawing) {
-                                map.fitBounds(pPoly.getBounds(), { padding: [40, 40] });
+                                map.fitBounds(currentPropertyPolygon.getBounds(), { padding: [40, 40] });
                             }
                         }
 
@@ -1151,16 +1451,19 @@ private fun generateLeafletMapHtml(): String {
                                 var zPts = z.points.map(function(p) { return [p.lat, p.lng]; });
                                 var zPoly = L.polygon(zPts, {
                                     color: z.colorHex || '#2e7d32',
-                                    weight: 2.5,
+                                    weight: 3,
                                     fillOpacity: 0.4
                                 }).addTo(zonesLayer);
 
+                                currentZonePolygons[z.id] = zPoly;
                                 zPts.forEach(function(pt) { zoneBounds.push(pt); });
 
                                 zPoly.bindTooltip(z.name, { permanent: true, direction: 'center', className: 'zone-label' });
                                 zPoly.on('click', function(e) {
                                     L.DomEvent.stopPropagation(e);
-                                    if (window.AndroidBridge) window.AndroidBridge.selectZone(z.id);
+                                    if (window.AndroidBridge && window.AndroidBridge.selectZone) {
+                                        window.AndroidBridge.selectZone(z.id);
+                                    }
                                 });
                             }
                         });

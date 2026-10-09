@@ -22,8 +22,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.FarmRepository
 import com.example.ui.components.FarmBackButton
+import com.example.ui.components.FarmDateSelector
 import com.example.ui.components.FarmPrimaryButton
 import com.example.ui.theme.*
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun RegistraUsoProdottoScreen(
@@ -33,10 +38,14 @@ fun RegistraUsoProdottoScreen(
     val fields by FarmRepository.fields.collectAsState()
     val products by FarmRepository.products.collectAsState()
 
-    var selectedField by remember { mutableStateOf("Agrumeto") }
-    var selectedProduct by remember { mutableStateOf("Poltiglia bordolese") }
+    val todayFormatted = remember {
+        SimpleDateFormat("dd/MM/yyyy", Locale.ITALIAN).format(Date())
+    }
+
+    var selectedField by remember { mutableStateOf(fields.firstOrNull()?.name ?: "Uliveto") }
+    var selectedProduct by remember { mutableStateOf(products.firstOrNull()?.name ?: "Poltiglia bordolese") }
     var amount by remember { mutableStateOf("2 kg") }
-    var dateStr by remember { mutableStateOf("Oggi, 8 ottobre") }
+    var dateStr by remember { mutableStateOf(todayFormatted) }
     var reminderEnabled by remember { mutableStateOf(true) }
 
     var showFieldPicker by remember { mutableStateOf(false) }
@@ -46,7 +55,21 @@ fun RegistraUsoProdottoScreen(
     // Dynamic withdrawal period calculation
     val currentProductObj = products.find { it.name == selectedProduct }
     val withdrawalDays = currentProductObj?.withdrawalPeriodDays ?: 20
-    val safeDateStr = if (withdrawalDays > 0) "28 ottobre" else "Subito"
+    val safeDateStr = remember(dateStr, withdrawalDays) {
+        if (withdrawalDays <= 0) "Subito"
+        else {
+            try {
+                val sdf = SimpleDateFormat("dd/MM/yyyy", Locale.ITALIAN)
+                val cal = Calendar.getInstance()
+                val parsed = sdf.parse(dateStr)
+                if (parsed != null) cal.time = parsed
+                cal.add(Calendar.DAY_OF_MONTH, withdrawalDays)
+                SimpleDateFormat("d MMMM yyyy", Locale.ITALIAN).format(cal.time)
+            } catch (_: Exception) {
+                "+$withdrawalDays giorni"
+            }
+        }
+    }
 
     val scrollState = rememberScrollState()
 
@@ -102,12 +125,11 @@ fun RegistraUsoProdottoScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Selector 4: Quando?
-        FormSelectionCard(
-            label = "Quando?",
-            value = dateStr,
-            onClick = { /* default is today */ },
-            testTag = "select_date_usage"
+        // Selector 4: Quando? (Globally integrated FarmDateSelector)
+        FarmDateSelector(
+            selectedDateStr = dateStr,
+            onDateSelected = { dateStr = it },
+            label = "Quando è stato applicato? *"
         )
 
         Spacer(modifier = Modifier.height(20.dp))

@@ -225,7 +225,14 @@ fun HomeScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Weather Module & Agronomic Suggestions (Meteo e Suggerimenti Intelligenti)
+        com.example.ui.components.WeatherBanner(
+            modifier = Modifier.padding(bottom = 4.dp)
+        )
+
+        Spacer(modifier = Modifier.height(14.dp))
 
         // 4 Main Colored Cards (2x2 Grid)
         Row(

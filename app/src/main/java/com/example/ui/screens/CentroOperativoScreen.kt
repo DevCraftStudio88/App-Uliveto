@@ -83,6 +83,14 @@ fun CentroOperativoScreen(
 
         Spacer(modifier = Modifier.height(18.dp))
 
+        // Weather Forecast & Agronomic Advice
+        com.example.ui.components.WeatherBanner(
+            modifier = Modifier.padding(bottom = 8.dp),
+            initiallyExpanded = true
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
         // AI Advice Card based ONLY on real farm data
         Surface(
             shape = RoundedCornerShape(20.dp),
@@ -174,7 +182,9 @@ fun CentroOperativoScreen(
                             coroutineScope.launch {
                                 val propInfo = property?.let { "${it.name} (${String.format("%.2f", it.areaHectares)} ha)" } ?: "Nessuna proprietà"
                                 val zonesInfo = fields.joinToString { "${it.name}: ${it.crop}" }
-                                val contextStr = "Proprietà: $propInfo. Zone: $zonesInfo. Lavori in corso: ${tasks.size}. Tono: ${settings.assistant.tone}."
+                                val curWeather = com.example.data.WeatherService.weatherState.value
+                                val weatherInfo = "${curWeather.temperature.toInt()}°C, ${curWeather.conditionTitle}, vento ${curWeather.windSpeedKmH.toInt()} km/h, umidità ${curWeather.humidity}%. Consigli agronomici attivi: ${curWeather.adviceList.joinToString { it.title }}"
+                                val contextStr = "Proprietà: $propInfo. Zone: $zonesInfo. Meteo locale: $weatherInfo. Lavori in corso: ${tasks.size}. Tono: ${settings.assistant.tone}."
                                 aiAnswer = GeminiService.askAdvisor(userQuestion, contextStr)
                                 isThinking = false
                             }

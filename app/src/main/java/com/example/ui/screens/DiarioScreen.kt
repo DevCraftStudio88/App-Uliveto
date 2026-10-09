@@ -30,6 +30,7 @@ import com.example.data.ExtractedDiary
 import com.example.data.FarmRepository
 import com.example.data.GeminiService
 import com.example.ui.components.FarmBackButton
+import com.example.ui.components.FarmDateSelector
 import com.example.ui.components.FarmPrimaryButton
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
@@ -48,6 +49,9 @@ fun DiarioScreen(
     var recordingSeconds by remember { mutableIntStateOf(0) }
     var spokenText by remember { mutableStateOf("") }
     var extractedData by remember { mutableStateOf(ExtractedDiary()) }
+    var diaryDate by remember {
+        mutableStateOf(java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.ITALIAN).format(java.util.Date()))
+    }
 
     var isAiAnalyzing by remember { mutableStateOf(false) }
     var showEditDialog by remember { mutableStateOf(false) }
@@ -315,6 +319,13 @@ fun DiarioScreen(
                     ExtractedRow(label = "Lavoro", value = extractedData.task.ifBlank { "—" })
                     ExtractedRow(label = "Prodotto", value = extractedData.product.ifBlank { "—" })
                     ExtractedRow(label = "Quantità", value = extractedData.quantity.ifBlank { "—" })
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    FarmDateSelector(
+                        selectedDateStr = diaryDate,
+                        onDateSelected = { diaryDate = it },
+                        label = "Data registrazione lavoro"
+                    )
                 }
             }
 
@@ -327,14 +338,13 @@ fun DiarioScreen(
             ) {
                 Button(
                     onClick = {
-                        val todayStr = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.ITALIAN).format(java.util.Date())
                         FarmRepository.addDiaryEntry(
                             raw = spokenText,
                             zone = extractedData.zone,
                             task = extractedData.task,
                             product = extractedData.product,
                             qty = extractedData.quantity,
-                            date = todayStr
+                            date = diaryDate
                         )
                         saveSuccessMessage = "Voce salvata nel diario con successo!"
                         spokenText = ""
